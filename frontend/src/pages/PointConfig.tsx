@@ -12,7 +12,7 @@ import StatBadge from '@/components/common/StatBadge'
 import { useDamStore } from '@/stores/damStore'
 import { usePointStore } from '@/stores/pointStore'
 import { useIdbTable } from '@/hooks/useIdbTable'
-import { db, type ObservationRow } from '@/utils/db'
+import { db, type ObservationRow, type PointConfigSyncResult } from '@/utils/db'
 import {
   EMPTY_POINT_DRAFT,
   POINT_TYPES,
@@ -31,6 +31,16 @@ interface BulkDraft {
   initialValue: number
   threshold: number
   installDate: string
+}
+
+/** 汇总配置保存后历史观测与未闭环预警的重算结果 */
+function describeSyncResult(sync: PointConfigSyncResult | null): string {
+  if (!sync || sync.pointIds.length === 0) return ''
+  const parts: string[] = []
+  if (sync.observationCount > 0) parts.push(`重算历史观测 ${sync.observationCount} 条`)
+  if (sync.adjustedAlarmIds.length > 0) parts.push(`调整未闭环预警 ${sync.adjustedAlarmIds.length} 张`)
+  if (sync.closedAlarmIds.length > 0) parts.push(`恢复正常自动闭环 ${sync.closedAlarmIds.length} 张`)
+  return parts.length > 0 ? `；${parts.join('，')}` : ''
 }
 
 export default function PointConfig() {
@@ -144,8 +154,8 @@ export default function PointConfig() {
     if (!values) return
     const payload: PointDraft = { ...values, unit: values.unit || POINT_UNIT[values.type] }
     if (editingId) {
-      await pointStore.updatePoint(editingId, payload)
-      message.success('测点已更新')
+      const sync = await pointStore.updatePoint(editingId, payload)
+      message.success(`测点已更新${describeSyncResult(sync)}`)
     } else {
       await pointStore.createPoint(payload)
       message.success('测点已布设')
@@ -194,12 +204,12 @@ export default function PointConfig() {
   }
 
   const commitAll = async (): Promise<void> => {
-    const count = await pointStore.commitAllThresholdDrafts()
+    const { count, sync } = await pointStore.commitAllThresholdDrafts()
     if (count === 0) {
       message.warning('没有待提交的阈值草稿')
       return
     }
-    message.success(`已提交 ${count} 个测点的初值与阈值`)
+    message.success(`已提交 ${count} 个测点的初值与阈值${describeSyncResult(sync)}`)
   }
 
   const columns: TableColumnsType<Point> = [
@@ -248,8 +258,8 @@ export default function PointConfig() {
               size="small"
               disabled={!draft}
               onClick={async () => {
-                await pointStore.commitThresholdDraft(record.id)
-                message.success(`${record.code} 初值与阈值已保存`)
+                const sync = await pointStore.commitThresholdDraft(record.id)
+                message.success(`${record.code} 初值与阈值已保存${describeSyncResult(sync)}`)
               }}
             >
               保存

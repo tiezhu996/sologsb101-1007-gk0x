@@ -158,7 +158,7 @@ export default function TrendBoard() {
       initialValue: values.initialValue,
       threshold: values.threshold
     })
-    message.success(`${editingPoint.code} 初值与阈值已更新，历史观测偏差已重算`)
+    message.success(`${editingPoint.code} 初值与阈值已更新，历史观测与未闭环预警已按最新配置重算`)
     setThresholdOpen(false)
   }
 

@@ -4,7 +4,7 @@
  */
 import { create } from 'zustand'
 import { liveQuery } from 'dexie'
-import { createId, db, deletePointCascade, type PointRow } from '@/utils/db'
+import { createId, db, deletePointCascade, syncPointConfigChanges, type PointConfigSyncResult, type PointRow } from '@/utils/db'
 import {
   createEmptyPointFilter,
   POINT_UNIT,
@@ -25,13 +25,13 @@ interface PointState {
   patchFilter: (patch: Partial<PointFilterState>) => void
   resetFilter: () => void
   createPoint: (draft: PointDraft) => Promise<Point>
-  updatePoint: (id: string, patch: Partial<PointDraft>) => Promise<void>
+  updatePoint: (id: string, patch: Partial<PointDraft>) => Promise<PointConfigSyncResult | null>
   removePoint: (id: string) => Promise<void>
   bulkCreatePoints: (sectionId: string, drafts: PointDraft[]) => Promise<number>
   setThresholdDraft: (pointId: string, draft: ThresholdDraft) => void
   clearThresholdDraft: (pointId?: string) => void
-  commitThresholdDraft: (pointId: string) => Promise<void>
-  commitAllThresholdDrafts: () => Promise<number>
+  commitThresholdDraft: (pointId: string) => Promise<PointConfigSyncResult | null>
+  commitAllThresholdDrafts: () => Promise<{ count: number; sync: PointConfigSyncResult }>
   toggleSelect: (id: string, checked: boolean) => void
   setSelectedIds: (ids: string[]) => void
   clearSelection: () => void
@@ -75,6 +75,7 @@ export const usePointStore = create<PointState>((set, get) => ({
   },
 
   async updatePoint(id, patch) {
+    const previous = await db.points.get(id)
     const next: Partial<PointRow> = { ...patch, updatedAt: Date.now() }
     if (patch.code !== undefined) next.code = patch.code.trim()
     if (patch.sectionId !== undefined) {
@@ -82,6 +83,15 @@ export const usePointStore = create<PointState>((set, get) => ({
       if (section) next.damId = section.damId
     }
     await db.points.update(id, next)
+    // 初值或阈值变化时，历史观测与未闭环预警统一按最新配置重算
+    if (
+      previous &&
+      ((patch.initialValue !== undefined && Number(patch.initialValue) !== previous.initialValue) ||
+        (patch.threshold !== undefined && Number(patch.threshold) !== previous.threshold))
+    ) {
+      return syncPointConfigChanges([id])
+    }
+    return null
   },
 
   async removePoint(id) {
@@ -127,32 +137,50 @@ export const usePointStore = create<PointState>((set, get) => ({
 
   async commitThresholdDraft(pointId) {
     const draft = get().thresholdDraft[pointId]
-    if (!draft) return
+    if (!draft) return null
+    const previous = get().points.find((point) => point.id === pointId)
     await db.points.update(pointId, {
       initialValue: draft.initialValue,
       threshold: draft.threshold > 0 ? draft.threshold : 1,
       updatedAt: Date.now()
     })
     get().clearThresholdDraft(pointId)
+    // 仅在初值或阈值确实变化时重算，避免无意义的整序列写库
+    if (
+      previous &&
+      (Number(draft.initialValue) !== previous.initialValue ||
+        (draft.threshold > 0 ? draft.threshold : 1) !== previous.threshold)
+    ) {
+      return syncPointConfigChanges([pointId])
+    }
+    return null
   },
 
   async commitAllThresholdDrafts() {
-    const entries = Object.entries(get().thresholdDraft)
-    if (entries.length === 0) return 0
+    const drafts = get().thresholdDraft
+    const entries = Object.entries(drafts)
+    if (entries.length === 0) return { count: 0, sync: { pointIds: [], observationCount: 0, closedAlarmIds: [], adjustedAlarmIds: [] } }
+    const now = Date.now()
+    const changedIds: string[] = []
     const rows = get()
       .points.filter((point) => entries.some(([id]) => id === point.id))
       .map((point) => {
-        const draft = get().thresholdDraft[point.id]
+        const draft = drafts[point.id]
+        const threshold = draft.threshold > 0 ? draft.threshold : 1
+        if (Number(draft.initialValue) !== point.initialValue || threshold !== point.threshold) {
+          changedIds.push(point.id)
+        }
         return {
           ...point,
           initialValue: draft.initialValue,
-          threshold: draft.threshold > 0 ? draft.threshold : 1,
-          updatedAt: Date.now()
+          threshold,
+          updatedAt: now
         }
       })
     if (rows.length > 0) await db.points.bulkPut(rows)
     get().clearThresholdDraft()
-    return rows.length
+    const sync = changedIds.length > 0 ? await syncPointConfigChanges(changedIds) : { pointIds: [], observationCount: 0, closedAlarmIds: [], adjustedAlarmIds: [] }
+    return { count: rows.length, sync }
   },
 
   toggleSelect(id, checked) {
