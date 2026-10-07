@@ -1,0 +1,255 @@
+/* 尾矿库坝体位移与浸润线监测台 · 全局样式 */
+:root {
+  --td-ink: #1b2a3a;
+  --td-ink-soft: #6b7a8d;
+  --td-line: #dde5ee;
+  --td-bg: #f2f5f9;
+  --td-panel: #ffffff;
+  --td-accent: #1f5c99;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--td-bg);
+  color: var(--td-ink);
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 24px;
+  background: linear-gradient(120deg, #14324f 0%, #1f5c99 60%, #3f86c9 100%);
+  color: #eaf3fb;
+}
+
+.app-header__brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app-header__mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.app-header__title {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 2px;
+}
+
+.app-header__sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: rgba(234, 243, 251, 0.74);
+}
+
+.app-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.app-nav__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #eaf3fb;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.app-nav__item:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.app-nav__item.is-active {
+  background: #eaf3fb;
+  color: #14324f;
+  font-weight: 600;
+}
+
+.app-nav__badge {
+  font-style: normal;
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.app-main {
+  flex: 1;
+  width: 100%;
+  max-width: 1420px;
+  margin: 0 auto;
+  padding: 20px 24px 32px;
+}
+
+.app-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 24px 20px;
+  font-size: 12px;
+  color: var(--td-ink-soft);
+}
+
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.page-head__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.page-head__desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--td-ink-soft);
+}
+
+.page-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.panel {
+  padding: 16px;
+  background: var(--td-panel);
+  border: 1px solid var(--td-line);
+  border-radius: 12px;
+}
+
+.panel + .panel {
+  margin-top: 16px;
+}
+
+.stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.grid-two {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1080px) {
+  .grid-two {
+    grid-template-columns: 1fr;
+  }
+}
+
+.muted {
+  color: var(--td-ink-soft);
+  font-size: 12px;
+}
+
+.panel-title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.card-list-item {
+  padding: 12px 14px;
+  border: 1px solid var(--td-line);
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.card-list-item + .card-list-item {
+  margin-top: 10px;
+}
+
+.card-list-item:hover {
+  border-color: #9dbfe0;
+}
+
+.card-list-item.is-active {
+  border-color: var(--td-accent);
+  box-shadow: 0 0 0 2px rgba(31, 92, 153, 0.14);
+}
+
+.card-list-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.card-list-item__meta {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--td-ink-soft);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}

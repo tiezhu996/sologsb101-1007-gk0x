@@ -1,0 +1,31 @@
+{
+  "name": "gbtaildam-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "尾矿库坝体位移与浸润线监测台 - 纯前端 SPA（React 18 + TypeScript + Ant Design + Vite + Zustand + React Router + Dexie）",
+  "scripts": {
+    "dev": "vite --host --port 22807",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview --host --port 22807"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.5.1",
+    "antd": "^5.22.5",
+    "dayjs": "^1.11.13",
+    "dexie": "^4.0.11",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "~5.7.3",
+    "vite": "^6.1.0"
+  }
+}
