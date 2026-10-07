@@ -15,7 +15,8 @@ import { usePointStore } from '@/stores/pointStore'
 import { useAlarmStore } from '@/stores/alarmStore'
 import { useAlarmLevel } from '@/hooks/useAlarmLevel'
 import { useIdbTable } from '@/hooks/useIdbTable'
-import { db, putObservation, type ObservationRow } from '@/utils/db'
+import { db, deleteObservationAndSync, putObservation, type ObservationRow } from '@/utils/db'
+import { describeSyncSummary } from '@/utils/threshold'
 import { POINT_TYPES, type Point, type PointType } from '@/types/point'
 import type { ObservationDraft } from '@/types/observation'
 
@@ -118,8 +119,9 @@ export default function ObservationEntry() {
       return
     }
     const now = Date.now()
+    let syncSummary: string | null = null
     try {
-      await putObservation({
+      const result = await putObservation({
         id: editingId ?? `ob_${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
         pointId,
         date: values.date,
@@ -128,17 +130,22 @@ export default function ObservationEntry() {
         createdAt: now,
         updatedAt: now
       })
+      syncSummary = describeSyncSummary(result.sync)
     } catch (error) {
       message.error(`观测保存失败：${error instanceof Error ? error.message : '未知错误'}`)
       return
     }
-    message.success(editingId ? '观测记录已更新，累计量与日速率已重算' : '观测已录入，累计量与日速率已自动计算')
+    message.success(
+      editingId
+        ? `观测记录已更新，累计量与日速率已重算；${syncSummary ?? '未闭环预警无需调整'}`
+        : `观测已录入，累计量与日速率已自动计算；${syncSummary ?? '未闭环预警无需调整'}`
+    )
     setOpen(false)
   }
 
   const remove = async (row: ObservationRow): Promise<void> => {
-    await db.observations.delete(row.id)
-    message.success('观测记录已删除')
+    const sync = await deleteObservationAndSync(row.id)
+    message.success(sync ? `观测记录已删除，后续累计量与日速率已重算；${describeSyncSummary(sync)}` : '观测记录已删除')
   }
 
   const generateAlarm = async (): Promise<void> => {

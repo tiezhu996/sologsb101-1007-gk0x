@@ -80,7 +80,7 @@ sologsb101-1007/
 
 - **IndexedDB 库名**：`gbtaildam`（Dexie 封装，`src/utils/db.ts`）
 - **对象表**：`dams`、`sections`、`points`、`observations`、`alarms`、`pools`
-- **数据结构版本**：`DB_VERSION = 2`，含 `version(1)` → `version(2)` 的索引变更与 `upgrade()` 迁移（补齐 `revision`、用所属断面回填测点 `damId`、用测点回填预警 `damId` 并补齐处置字段）
+- **数据结构版本**：`DB_VERSION = 3`，含 `version(1)` → `version(2)` → `version(3)` 的索引变更与 `upgrade()` 迁移：v2 补齐 `revision`、用所属断面回填测点 `damId`、用测点回填预警 `damId` 并补齐处置字段；v3 按最新测点初值/阈值统一重算全部历史观测的累计变化与日速率，并把未闭环预警按最新观测调整原单（恢复正常自动闭环、级别升降级，已闭环单保留原样）
 - **首屏自动播种**：`initDatabase()` 中 `if (await db.dams.count() === 0) await seedDatabase()`，播种 2 座坝体 → 4 个断面 → 9 个测点 → 21 条观测 → 6 张预警 → 5 条库水位记录的完整父子孙链条；播种幂等
 - **localStorage 辅助键**：`gbtaildam:db-version`、`gbtaildam:last-backup-at`、`gbtaildam:ui-prefs`
 - 应用为**无状态容器**：数据不落容器磁盘、不使用数据库服务、不挂载命名卷

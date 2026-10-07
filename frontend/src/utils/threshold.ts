@@ -1,8 +1,9 @@
 /**
  * 阈值区间比较、累计量与日速率计算、毫米与米单位换算
  */
-import type { AlarmLevel } from '@/types/alarm'
+import type { Alarm, AlarmLevel, AlarmState } from '@/types/alarm'
 import type { Observation } from '@/types/observation'
+import type { Point } from '@/types/point'
 import type { TrendPoint } from '@/types/observation'
 
 /** 各级预警对应的“累计变化量 / 阈值”比例下限 */
@@ -139,4 +140,98 @@ export function formatRatio(value: number): string {
 export function alarmBasis(point: { code: string; type: string; threshold: number; unit: string }, cumulative: number, level: AlarmLevel): string {
   const ratio = ratioOf(cumulative, point.threshold)
   return `${point.code}（${point.type}）累计变化 ${cumulative.toFixed(3)} ${point.unit}，达阈值 ${point.threshold} ${point.unit} 的 ${formatRatio(ratio)}，判定为${level}色预警`
+}
+
+/**
+ * 测点最新观测：预警单始终按该测点的最新一条观测调整，
+ * 而不是按预警单触发日期对应的历史观测。
+ */
+export interface LatestObservationLike {
+  date: string
+  cumulative: number
+}
+
+/** 单张未闭环预警按最新配置 / 最新观测调整后的结果 */
+export interface AlarmReconciliation {
+  alarm: Alarm
+  /** null 表示最新观测已恢复正常，应关闭原单；否则为调整后的级别 */
+  level: AlarmLevel | null
+  /** 最新累计变化量（同时回写为触发值） */
+  triggerValue: number
+  triggerDate: string
+}
+
+/** 一批测点调整结果的汇总，供页面给出反馈文案 */
+export interface AlarmReconcileSummary {
+  /** 升级（漏掉的更高级别被补上）/ 降级 / 关闭的原单数量 */
+  upgraded: number
+  downgraded: number
+  closed: number
+}
+
+/**
+ * 未闭环预警统一按最新测点配置与最新观测调整原单：
+ * - 最新观测恢复正常（低于蓝级下限）→ 关闭原单，不另开新单；
+ * - 仍越限但级别变化 → 原地调整级别、触发值与触发日期；
+ * - 测点或观测已不存在 → 无法继续跟踪，关闭原单；
+ * - 已闭环预警单不在此处理，保留原样（历史处置记录）。
+ * 同一测点的每张未闭环单都按最新观测独立调整，不新建任何单据。
+ */
+export function reconcileOpenAlarms(
+  openAlarms: Alarm[],
+  points: Point[],
+  latestByPoint: ReadonlyMap<string, LatestObservationLike>
+): { items: AlarmReconciliation[]; summary: AlarmReconcileSummary } {
+  const pointOf = new Map(points.map((point) => [point.id, point]))
+  const items: AlarmReconciliation[] = []
+  let upgraded = 0
+  let downgraded = 0
+  let closed = 0
+
+  openAlarms
+    .filter((alarm) => isOpenAlarmState(alarm.state))
+    .forEach((alarm) => {
+      const point = pointOf.get(alarm.pointId)
+      const latest = latestByPoint.get(alarm.pointId)
+      if (!point || !latest) {
+        // 测点 / 观测已不存在，原单无法继续跟踪，直接关闭
+        items.push({ alarm, level: null, triggerValue: alarm.triggerValue, triggerDate: alarm.triggerDate })
+        closed += 1
+        return
+      }
+      const level = alarmLevelOf(latest.cumulative, point.threshold)
+      items.push({
+        alarm,
+        level,
+        triggerValue: latest.cumulative,
+        triggerDate: latest.date
+      })
+      if (level === null) {
+        closed += 1
+      } else if (alarmWeight(level) > alarmWeight(alarm.level)) {
+        upgraded += 1
+      } else if (level !== alarm.level) {
+        downgraded += 1
+      }
+    })
+
+  return { items, summary: { upgraded, downgraded, closed } }
+}
+
+/** 预警单是否为未闭环（待处置 / 处置中） */
+export function isOpenAlarmState(state: AlarmState): boolean {
+  return state !== '已闭环'
+}
+
+/** 配置重算与预警联动结果的页面反馈文案 */
+export function describeSyncSummary(summary: {
+  alarmUpgraded: number
+  alarmDowngraded: number
+  alarmClosed: number
+}): string {
+  const parts: string[] = []
+  if (summary.alarmUpgraded > 0) parts.push(`${summary.alarmUpgraded} 张未闭环单升级到最新级别`)
+  if (summary.alarmDowngraded > 0) parts.push(`${summary.alarmDowngraded} 张未闭环单降级`)
+  if (summary.alarmClosed > 0) parts.push(`${summary.alarmClosed} 张已恢复正常并自动闭环`)
+  return parts.length > 0 ? parts.join('，') : '未闭环预警无需调整'
 }

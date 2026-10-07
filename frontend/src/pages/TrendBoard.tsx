@@ -29,7 +29,7 @@ import { useAlarmLevel } from '@/hooks/useAlarmLevel'
 import { useIdbTable } from '@/hooks/useIdbTable'
 import { db, type ObservationRow } from '@/utils/db'
 import { POINT_TYPES, type Point, type PointType } from '@/types/point'
-import { formatRate, formatReading, ratioOf } from '@/utils/threshold'
+import { describeSyncSummary, formatRate, formatReading, ratioOf } from '@/utils/threshold'
 
 interface TrendRow {
   point: Point
@@ -154,11 +154,15 @@ export default function TrendBoard() {
     if (!editingPoint) return
     const values = await thresholdForm.validateFields().catch(() => null)
     if (!values) return
-    await pointStore.updatePoint(editingPoint.id, {
+    const sync = await pointStore.updatePoint(editingPoint.id, {
       initialValue: values.initialValue,
       threshold: values.threshold
     })
-    message.success(`${editingPoint.code} 初值与阈值已更新，历史观测偏差已重算`)
+    message.success(
+      sync
+        ? `${editingPoint.code} 初值与阈值已更新，历史观测已按最新配置重算；${describeSyncSummary(sync)}`
+        : `${editingPoint.code} 初值与阈值已更新`
+    )
     setThresholdOpen(false)
   }
 

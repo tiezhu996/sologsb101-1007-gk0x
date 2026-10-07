@@ -4,7 +4,15 @@
  */
 import { create } from 'zustand'
 import { liveQuery } from 'dexie'
-import { createId, db, deletePointCascade, type PointRow } from '@/utils/db'
+import {
+  createId,
+  db,
+  deletePointCascade,
+  EMPTY_POINT_SYNC_RESULT,
+  syncPointObservations,
+  type PointRow,
+  type PointSyncResult
+} from '@/utils/db'
 import {
   createEmptyPointFilter,
   POINT_UNIT,
@@ -25,13 +33,13 @@ interface PointState {
   patchFilter: (patch: Partial<PointFilterState>) => void
   resetFilter: () => void
   createPoint: (draft: PointDraft) => Promise<Point>
-  updatePoint: (id: string, patch: Partial<PointDraft>) => Promise<void>
+  updatePoint: (id: string, patch: Partial<PointDraft>) => Promise<PointSyncResult | null>
   removePoint: (id: string) => Promise<void>
   bulkCreatePoints: (sectionId: string, drafts: PointDraft[]) => Promise<number>
   setThresholdDraft: (pointId: string, draft: ThresholdDraft) => void
   clearThresholdDraft: (pointId?: string) => void
-  commitThresholdDraft: (pointId: string) => Promise<void>
-  commitAllThresholdDrafts: () => Promise<number>
+  commitThresholdDraft: (pointId: string) => Promise<PointSyncResult | null>
+  commitAllThresholdDrafts: () => Promise<PointSyncResult>
   toggleSelect: (id: string, checked: boolean) => void
   setSelectedIds: (ids: string[]) => void
   clearSelection: () => void
@@ -82,6 +90,14 @@ export const usePointStore = create<PointState>((set, get) => ({
       if (section) next.damId = section.damId
     }
     await db.points.update(id, next)
+    // 初值 / 阈值变更后：历史观测按最新配置重算，未闭环预警按最新观测调整原单
+    if (
+      (patch.initialValue !== undefined && typeof patch.initialValue === 'number') ||
+      (patch.threshold !== undefined && typeof patch.threshold === 'number')
+    ) {
+      return syncPointObservations([id])
+    }
+    return null
   },
 
   async removePoint(id) {
@@ -127,18 +143,21 @@ export const usePointStore = create<PointState>((set, get) => ({
 
   async commitThresholdDraft(pointId) {
     const draft = get().thresholdDraft[pointId]
-    if (!draft) return
+    if (!draft) return null
     await db.points.update(pointId, {
       initialValue: draft.initialValue,
       threshold: draft.threshold > 0 ? draft.threshold : 1,
       updatedAt: Date.now()
     })
     get().clearThresholdDraft(pointId)
+    // 保存后历史观测按最新初值重算，未闭环预警按最新观测调整（关闭/升降级原单）
+    return syncPointObservations([pointId])
   },
 
   async commitAllThresholdDrafts() {
     const entries = Object.entries(get().thresholdDraft)
-    if (entries.length === 0) return 0
+    if (entries.length === 0) return { ...EMPTY_POINT_SYNC_RESULT }
+    const now = Date.now()
     const rows = get()
       .points.filter((point) => entries.some(([id]) => id === point.id))
       .map((point) => {
@@ -147,12 +166,13 @@ export const usePointStore = create<PointState>((set, get) => ({
           ...point,
           initialValue: draft.initialValue,
           threshold: draft.threshold > 0 ? draft.threshold : 1,
-          updatedAt: Date.now()
+          updatedAt: now
         }
       })
     if (rows.length > 0) await db.points.bulkPut(rows)
     get().clearThresholdDraft()
-    return rows.length
+    // 全部改动测点一次性重算历史观测并联动未闭环预警
+    return syncPointObservations(rows.map((row) => row.id))
   },
 
   toggleSelect(id, checked) {

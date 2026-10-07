@@ -10,10 +10,17 @@ import type { Point } from '@/types/point'
 import type { Observation } from '@/types/observation'
 import type { Alarm } from '@/types/alarm'
 import type { Pool } from '@/types/pool'
-import { cumulativeOf, dailyRateOf, daysBetween } from '@/utils/threshold'
+import {
+  cumulativeOf,
+  dailyRateOf,
+  daysBetween,
+  isOpenAlarmState,
+  reconcileOpenAlarms,
+  type LatestObservationLike
+} from '@/utils/threshold'
 
 export const DB_NAME = 'gbtaildam'
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 export const LS_KEYS = {
   dbVersion: 'gbtaildam:db-version',
@@ -122,6 +129,81 @@ class TailDamDatabase extends Dexie {
             if (typeof alarm.handler !== 'string') alarm.handler = ''
             if (typeof alarm.measure !== 'string') alarm.measure = ''
           })
+      })
+
+    // v3：历史观测统一按最新测点配置重算累计变化与日速率；
+    // 未闭环预警按最新观测调整原单（恢复正常关闭、级别变化升降级），已闭环单保留原样。
+    // 索引无变化，仅升级数据口径。
+    this.version(DB_VERSION)
+      .stores({
+        dams: 'id, name, damType, grade, updatedAt',
+        sections: 'id, damId, stakeNo, updatedAt',
+        points: 'id, sectionId, damId, code, type, updatedAt',
+        observations: 'id, pointId, date, observer, updatedAt',
+        alarms: 'id, pointId, damId, level, state, updatedAt',
+        pools: 'id, damId, date, updatedAt'
+      })
+      .upgrade(async (tx) => {
+        const pointRows = (await tx.table('points').toArray()) as PointRow[]
+        const observationRows = (await tx.table('observations').toArray()) as ObservationRow[]
+        const alarmRows = (await tx.table('alarms').toArray()) as AlarmRow[]
+        const now = Date.now()
+
+        // 1. 按测点分组重算全部观测
+        const observationsByPoint = new Map<string, ObservationRow[]>()
+        observationRows.forEach((row) => {
+          const list = observationsByPoint.get(row.pointId) ?? []
+          list.push(row)
+          observationsByPoint.set(row.pointId, list)
+        })
+        const nextObservations: ObservationRow[] = []
+        const latestByPoint = new Map<string, LatestObservationLike>()
+        pointRows.forEach((point) => {
+          const rows = (observationsByPoint.get(point.id) ?? []).sort((a, b) => a.date.localeCompare(b.date))
+          rows.forEach((row, index) => {
+            const previous = index === 0 ? null : rows[index - 1]
+            nextObservations.push({
+              ...row,
+              cumulative: cumulativeOf(row.reading, point.initialValue),
+              dailyRate: previous
+                ? dailyRateOf(row.reading, previous.reading, daysBetween(previous.date, row.date))
+                : 0,
+              updatedAt: now
+            })
+          })
+          const latest = rows[rows.length - 1]
+          if (latest) {
+            latestByPoint.set(point.id, {
+              date: latest.date,
+              cumulative: cumulativeOf(latest.reading, point.initialValue)
+            })
+          }
+        })
+
+        // 2. 未闭环预警按最新观测调整原单
+        const openAlarms = alarmRows.filter((alarm) => isOpenAlarmState(alarm.state))
+        const { items } = reconcileOpenAlarms(openAlarms, pointRows, latestByPoint)
+        const nextAlarms = items.map((item) => {
+          if (item.level === null) {
+            return {
+              ...item.alarm,
+              state: '已闭环' as const,
+              handler: item.alarm.handler || '系统自动',
+              measure: item.alarm.measure || AUTO_CLOSE_MEASURE,
+              updatedAt: now
+            }
+          }
+          return {
+            ...item.alarm,
+            level: item.level,
+            triggerValue: item.triggerValue,
+            triggerDate: item.triggerDate,
+            updatedAt: now
+          }
+        })
+
+        if (nextObservations.length > 0) await tx.table('observations').bulkPut(nextObservations)
+        if (nextAlarms.length > 0) await tx.table('alarms').bulkPut(nextAlarms)
       })
   }
 }
@@ -363,45 +445,134 @@ export async function resetDatabase(): Promise<void> {
   await seedDatabase()
 }
 
-/** 观测录入：写入累计变化量与日速率 */
+/**
+ * 观测录入：先按最新测点配置写入累计变化量与日速率，再统一重算该测点全部观测，
+ * 并按本次最新观测调整未闭环预警（恢复正常关闭原单、升级补级，不另开重复单）。
+ */
 export async function putObservation(
   row: Omit<Observation, 'cumulative' | 'dailyRate'> & { cumulative?: number; dailyRate?: number }
-): Promise<ObservationRow> {
+): Promise<{ observation: ObservationRow; sync: PointSyncResult }> {
   const point = await db.points.get(row.pointId)
   const initialValue = point ? point.initialValue : 0
   const others = (await db.observations.where('pointId').equals(row.pointId).toArray())
     .filter((item) => item.id !== row.id)
     .sort((a, b) => a.date.localeCompare(b.date))
   const previous = others.filter((item) => item.date < row.date).pop() ?? null
-  const cumulative = cumulativeOf(row.reading, initialValue)
-  const dailyRate = previous ? dailyRateOf(row.reading, previous.reading, daysBetween(previous.date, row.date)) : 0
   const next: ObservationRow = {
     ...row,
-    cumulative,
-    dailyRate,
+    cumulative: cumulativeOf(row.reading, initialValue),
+    dailyRate: previous ? dailyRateOf(row.reading, previous.reading, daysBetween(previous.date, row.date)) : 0,
     revision: ROW_REVISION
   }
   await db.observations.put(next)
-  return next
+  const sync = await syncPointObservations([row.pointId])
+  return { observation: next, sync }
 }
 
-/** 重算某测点全部观测的累计变化量与日速率 */
+/**
+ * 删除观测后重算该测点序列：后续观测的日速率会变，未闭环预警按删除后的最新观测调整。
+ */
+export async function deleteObservationAndSync(observationId: string): Promise<PointSyncResult | null> {
+  const row = await db.observations.get(observationId)
+  if (!row) return null
+  const pointId = row.pointId
+  await db.observations.delete(observationId)
+  return syncPointObservations([pointId])
+}
+
+/** 重算某测点全部观测的累计变化量与日速率，并同步调整该测点未闭环预警 */
 export async function recalculateObservations(pointId: string): Promise<void> {
-  const point = await db.points.get(pointId)
-  const initialValue = point ? point.initialValue : 0
-  const rows = (await db.observations.where('pointId').equals(pointId).toArray()).sort((a, b) =>
-    a.date.localeCompare(b.date)
-  )
-  const patches = rows.map((row, index) => {
-    const previous = index === 0 ? null : rows[index - 1]
-    return {
-      ...row,
-      cumulative: cumulativeOf(row.reading, initialValue),
-      dailyRate: previous ? dailyRateOf(row.reading, previous.reading, daysBetween(previous.date, row.date)) : 0,
-      updatedAt: Date.now()
+  await syncPointObservations([pointId])
+}
+
+/** 按最新观测自动关闭原单时写入的处置措施（已闭环单保留原处置记录，不动） */
+export const AUTO_CLOSE_MEASURE = '测点初值/阈值更新后按最新观测重算，累计变化已回落至蓝级以下，自动闭环'
+
+/** 测点配置 / 观测变更后，重算累计量、日速率并联动调整未闭环预警的结果 */
+export interface PointSyncResult {
+  pointCount: number
+  observationCount: number
+  /** 预警级别升级（含漏判的更高级别被补上）的原单数 */
+  alarmUpgraded: number
+  /** 预警级别降级的原单数 */
+  alarmDowngraded: number
+  /** 恢复正常被关闭的原单数 */
+  alarmClosed: number
+}
+
+export const EMPTY_POINT_SYNC_RESULT: PointSyncResult = {
+  pointCount: 0,
+  observationCount: 0,
+  alarmUpgraded: 0,
+  alarmDowngraded: 0,
+  alarmClosed: 0
+}
+
+/**
+ * 测点配置（初值 / 阈值）或观测序列变更后的统一收口：
+ * 1. 历史观测一律按最新测点配置重算累计变化量与日速率（本次口径以最新配置为准）；
+ * 2. 未闭环预警按各测点最新观测调整原单——恢复正常则关闭（不另开重复单），
+ *    级别变化则原地升降级，已闭环单保留原样。
+ */
+export async function syncPointObservations(pointIds: string[]): Promise<PointSyncResult> {
+  if (pointIds.length === 0) return { ...EMPTY_POINT_SYNC_RESULT }
+  const result: PointSyncResult = { ...EMPTY_POINT_SYNC_RESULT, pointCount: pointIds.length }
+  await db.transaction('rw', db.points, db.observations, db.alarms, async () => {
+    const now = Date.now()
+    const latestByPoint = new Map<string, LatestObservationLike>()
+    const points = await db.points.where('id').anyOf(pointIds).toArray()
+
+    for (const point of points) {
+      const rows = (await db.observations.where('pointId').equals(point.id).toArray()).sort((a, b) =>
+        a.date.localeCompare(b.date)
+      )
+      if (rows.length === 0) continue
+      const patches = rows.map((row, index) => {
+        const previous = index === 0 ? null : rows[index - 1]
+        return {
+          ...row,
+          cumulative: cumulativeOf(row.reading, point.initialValue),
+          dailyRate: previous ? dailyRateOf(row.reading, previous.reading, daysBetween(previous.date, row.date)) : 0,
+          updatedAt: now
+        }
+      })
+      await db.observations.bulkPut(patches)
+      result.observationCount += patches.length
+      const latest = patches[patches.length - 1]
+      latestByPoint.set(point.id, {
+        date: latest.date,
+        cumulative: latest.cumulative
+      })
     }
+
+    const openAlarms = (await db.alarms.where('pointId').anyOf(pointIds).toArray()).filter((alarm) =>
+      isOpenAlarmState(alarm.state)
+    )
+    const { items, summary } = reconcileOpenAlarms(openAlarms, points, latestByPoint)
+    result.alarmUpgraded = summary.upgraded
+    result.alarmDowngraded = summary.downgraded
+    result.alarmClosed = summary.closed
+    const alarmPatches = items.map((item) => {
+      if (item.level === null) {
+        return {
+          ...item.alarm,
+          state: '已闭环' as const,
+          handler: item.alarm.handler || '系统自动',
+          measure: item.alarm.measure || AUTO_CLOSE_MEASURE,
+          updatedAt: now
+        }
+      }
+      return {
+        ...item.alarm,
+        level: item.level,
+        triggerValue: item.triggerValue,
+        triggerDate: item.triggerDate,
+        updatedAt: now
+      }
+    })
+    if (alarmPatches.length > 0) await db.alarms.bulkPut(alarmPatches)
   })
-  if (patches.length > 0) await db.observations.bulkPut(patches)
+  return result
 }
 
 /* ============================ 本地 UI 偏好 ============================ */

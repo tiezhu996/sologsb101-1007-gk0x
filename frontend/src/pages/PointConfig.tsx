@@ -21,7 +21,7 @@ import {
   type PointDraft,
   type PointType
 } from '@/types/point'
-import { alarmLevelOf, isExceeded, ratioOf } from '@/utils/threshold'
+import { alarmLevelOf, describeSyncSummary, isExceeded, ratioOf } from '@/utils/threshold'
 
 interface BulkDraft {
   sectionId: string
@@ -144,8 +144,10 @@ export default function PointConfig() {
     if (!values) return
     const payload: PointDraft = { ...values, unit: values.unit || POINT_UNIT[values.type] }
     if (editingId) {
-      await pointStore.updatePoint(editingId, payload)
-      message.success('测点已更新')
+      const sync = await pointStore.updatePoint(editingId, payload)
+      message.success(
+        sync ? `测点已更新，历史观测已按最新配置重算；${describeSyncSummary(sync)}` : '测点已更新'
+      )
     } else {
       await pointStore.createPoint(payload)
       message.success('测点已布设')
@@ -194,12 +196,12 @@ export default function PointConfig() {
   }
 
   const commitAll = async (): Promise<void> => {
-    const count = await pointStore.commitAllThresholdDrafts()
-    if (count === 0) {
+    const sync = await pointStore.commitAllThresholdDrafts()
+    if (sync.pointCount === 0) {
       message.warning('没有待提交的阈值草稿')
       return
     }
-    message.success(`已提交 ${count} 个测点的初值与阈值`)
+    message.success(`已提交 ${sync.pointCount} 个测点的初值与阈值，历史观测已重算；${describeSyncSummary(sync)}`)
   }
 
   const columns: TableColumnsType<Point> = [
@@ -248,8 +250,12 @@ export default function PointConfig() {
               size="small"
               disabled={!draft}
               onClick={async () => {
-                await pointStore.commitThresholdDraft(record.id)
-                message.success(`${record.code} 初值与阈值已保存`)
+                const sync = await pointStore.commitThresholdDraft(record.id)
+                message.success(
+                  sync
+                    ? `${record.code} 初值与阈值已保存，历史观测已重算；${describeSyncSummary(sync)}`
+                    : `${record.code} 初值与阈值已保存`
+                )
               }}
             >
               保存
